@@ -1,0 +1,317 @@
+on:
+  workflow_dispatch:
+    inputs:
+      wine_tag:
+        description: 'Artifact/tag label only (kept for naming). Source comes from your release asset.'
+        required: true
+        default: 'proton-wine-10.0-2d'
+      toolchain_url:
+        description: 'Optional override URL for llvm-mingw toolchain asset (Linux/Ubuntu tar.*). If empty, uses your release asset.'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: wine-${{ github.ref }}-${{ inputs.wine_tag }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: 'bash --noprofile --norc -Eeuo pipefail {0}'
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    env:
+      PREFIX: ${{ github.workspace }}/_inst
+      STAGE:  ${{ github.workspace }}/_stage
+      TOOLCHAIN_ROOT: ${{ github.workspace }}/.toolchains
+      LLVM_TC_DIR: ${{ github.workspace }}/.toolchains/llvm-mingw-arm64ec
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 4G
+      CCACHE_COMPRESS: '1'
+      CCACHE_COMPILERCHECK: content
+      CCACHE_BASEDIR: ${{ github.workspace }}
+
+      # Fixed release asset URLs (your repo)
+      WINE_SRC_URL: https://github.com/Arihany/Protonbased/releases/download/Resources/wine-proton.tar.gz
+      LLVM_TC_URL_DEFAULT: https://github.com/Arihany/Protonbased/releases/download/Resources/llvm-mingw.tar.xz
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare dirs
+        run: mkdir -p "$TOOLCHAIN_ROOT" "$CCACHE_DIR"
+
+      - name: Pick toolchain URL (prefer your release asset)
+        id: tcmeta
+        run: |
+          set -Eeuo pipefail
+          tc_url='${{ inputs.toolchain_url }}'
+          if [[ -z "$tc_url" ]]; then
+            tc_url="$LLVM_TC_URL_DEFAULT"
+          fi
+          file=$(basename "$tc_url")
+          tag="$file"
+          tag="${tag%.tar.xz}"; tag="${tag%.tar.zst}"; tag="${tag%.tar.gz}"
+          echo "url=$tc_url" >> "$GITHUB_OUTPUT"
+          echo "tag=repo-$tag" >> "$GITHUB_OUTPUT"
+          echo "Using toolchain: $tc_url (tag=repo-$tag)"
+
+      - name: Cache toolchain (extracted)
+        id: cache_tc
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.LLVM_TC_DIR }}
+          key: llvm-mingw-arm64ec-${{ runner.os }}-${{ steps.tcmeta.outputs.tag }}
+
+      - name: Download & extract toolchain if cache missed
+        if: steps.cache_tc.outputs.cache-hit != 'true'
+        run: |
+          set -Eeuo pipefail
+          mkdir -p "$LLVM_TC_DIR"
+          cd "$TOOLCHAIN_ROOT"
+          url='${{ steps.tcmeta.outputs.url }}'
+          file=$(basename "$url")
+          echo "Downloading toolchain: $file"
+          curl -fL --retry 5 --retry-delay 3 -o "$file" "$url"
+          case "$file" in
+            *.tar.xz)  tar -C "$LLVM_TC_DIR" --strip-components=1 -xf "$file" ;;
+            *.tar.zst) tar --zstd -C "$LLVM_TC_DIR" --strip-components=1 -xf "$file" ;;
+            *.tar.gz)  tar -C "$LLVM_TC_DIR" --strip-components=1 -xzf "$file" ;;
+            *) echo "Unknown archive format: $file" >&2; exit 1 ;;
+          esac
+
+      - name: Add toolchain to PATH (prepend)
+        run: echo "PATH=${{ env.LLVM_TC_DIR }}/bin:$PATH" >> $GITHUB_ENV
+
+      - name: Sanity probe (gcc wrappers) and arm64ec link
+        run: |
+          set -Eeuo pipefail
+          echo ::group::which
+          which arm64ec-w64-mingw32-gcc || true
+          which arm64ec-w64-mingw32-g++ || true
+          which aarch64-w64-mingw32-gcc || true
+          which i686-w64-mingw32-gcc || true
+          echo ::endgroup::
+
+          echo ::group::arm64ec-probe
+          set +e
+          printf 'int main(void){return 0;}' > t.c
+          arm64ec-w64-mingw32-gcc -v t.c -o t.exe
+          stat t.exe || true
+          rm -f t.c t.exe || true
+          echo ::endgroup::
+
+      - name: Verify ARM64EC toolchain presence (fail-fast)
+        run: |
+          set -Eeuo pipefail
+          need="arm64ec-w64-mingw32-gcc arm64ec-w64-mingw32-g++ aarch64-w64-mingw32-gcc aarch64-w64-mingw32-g++ i686-w64-mingw32-gcc i686-w64-mingw32-g++ llvm-dlltool llvm-windres lld-link"
+          ok=1
+          for b in $need; do
+            if ! command -v "$b" >/dev/null 2>&1; then echo "::error title=Missing::$b not found"; ok=0; else which "$b"; "$b" --version | head -n1 || true; fi
+          done
+          # ARM64EC CRT + UCRT presence
+          test -f "$LLVM_TC_DIR/arm64ec-w64-mingw32/lib/libucrt.a" || { echo '::error title=Missing UCRT import lib::libucrt.a not found for arm64ec'; ok=0; }
+          test -f "$LLVM_TC_DIR/arm64ec-w64-mingw32/lib/crt2.o" || { echo '::error title=Missing CRT startup::crt2.o not found for arm64ec'; ok=0; }
+          # os_arm64x thunks should be present in some archive
+          sym_ok=0
+          for a in "$LLVM_TC_DIR/arm64ec-w64-mingw32/lib"/*.a; do
+            if llvm-nm -g --defined-only "$a" 2>/dev/null | grep -E "__os_arm64x_(check_icall|dispatch_call_no_redirect)" -q; then sym_ok=1; break; fi
+          done
+          if [[ $sym_ok -ne 1 ]]; then
+            echo '::error title=ARM64EC thunks missing::__os_arm64x_* symbols not found in import/static libs'; ok=0
+          fi
+          if [[ $ok -ne 1 ]]; then
+            echo "::error title=ARM64EC toolchain incomplete::Provide toolchain_url for an ARM64EC-capable llvm-mingw (ucrt) release"; exit 1
+          fi
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ runner.os }}-${{ inputs.wine_tag }}-${{ steps.tcmeta.outputs.tag }}-gccv1
+          restore-keys: |
+            ccache-${{ runner.os }}-
+
+      - name: Install build deps (incl. Debian Wine control.in hints)
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -y -o Acquire::Retries=3
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang lld git curl jq xz-utils zstd rsync pkg-config \
+            bison flex gettext autoconf automake libtool \
+            libfreetype6-dev libfontconfig1-dev libglib2.0-dev libunwind-dev \
+            libx11-dev libxext-dev libxi-dev libxrandr-dev libxrender-dev \
+            libxcursor-dev libxfixes-dev libxinerama-dev libxcomposite-dev \
+            libxdamage-dev libxkbcommon-dev libwayland-dev libdbus-1-dev \
+            libasound2-dev libpulse-dev libudev-dev libvulkan-dev libopengl-dev \
+            ocl-icd-opencl-dev zlib1g-dev libjpeg-dev libpng-dev libtiff-dev \
+            libgsm1-dev libldap2-dev libpcap0.8-dev ccache \
+            libgnutls28-dev liblcms2-dev libkrb5-dev libcups2-dev \
+            libgphoto2-dev libsane-dev libmpg123-dev libsdl2-dev libopenal-dev \
+            libosmesa6-dev libvkd3d-dev libgstreamer-plugins-base1.0-dev \
+            libgstreamer1.0-dev libcapi20-dev libxslt1-dev libxml2-dev libglu1-mesa-dev \
+            libgettextpo-dev
+
+      - name: Fetch Wine source from your release asset
+        run: |
+          set -Eeuo pipefail
+          mkdir -p src-wine
+          cd "$GITHUB_WORKSPACE"
+          url="$WINE_SRC_URL"
+          file=$(basename "$url")
+          echo "Downloading Wine source: $file"
+          curl -fL --retry 5 --retry-delay 3 -o "$file" "$url"
+          tmp=$(mktemp -d)
+          tar -C "$tmp" -xzf "$file"
+          # Move into src-wine (robust top-level detection)
+          shopt -s dotglob nullglob
+          if [[ $(find "$tmp" -mindepth 1 -maxdepth 1 | wc -l) -eq 1 ]] && [[ -d $(find "$tmp" -mindepth 1 -maxdepth 1 -type d) ]]; then
+            top=$(find "$tmp" -mindepth 1 -maxdepth 1 -type d | head -n1)
+            rsync -a "$top/" "$GITHUB_WORKSPACE/src-wine/"
+          else
+            rsync -a "$tmp/" "$GITHUB_WORKSPACE/src-wine/"
+          fi
+          rm -rf "$tmp"
+          echo "Wine tree ready:"; ls -la src-wine | sed -n '1,80p'
+
+      - name: Drop ARM64EC SDK shim header (Proton tag compat)
+        run: |
+          set -Eeuo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/src-wine/include"
+          cat > "$GITHUB_WORKSPACE/src-wine/include/arm64ec-sdk-shim.h" <<'H'
+          #ifndef WINE_ARM64EC_SDK_SHIM_H
+          #define WINE_ARM64EC_SDK_SHIM_H 1
+          #if defined(__arm64ec__) || defined(__ARM64EC__) || defined(_M_ARM64EC)
+          /* Minimal decls for Proton-wine headers that lack EC SDK types */
+          #ifndef __has_include
+          #define __has_include(x) 0
+          #endif
+          /* Provide only if not already supplied */
+          #ifndef _DISPATCHER_CONTEXT_ARM64EC_DEFINED
+          typedef struct _WINE_DISPATCHER_CONTEXT_ARM64EC {
+              void *NonVolatileRegisters;
+              unsigned char ControlPcIsUnwound;
+          } DISPATCHER_CONTEXT_ARM64EC, *PDISPATCHER_CONTEXT_ARM64EC;
+          #define _DISPATCHER_CONTEXT_ARM64EC_DEFINED 1
+          #endif
+          #ifndef _RTL_IS_EC_CODE_DECLARED
+          #ifdef __cplusplus
+          extern "C" {
+          #endif
+          int RtlIsEcCode(unsigned long long pc);
+          #ifdef __cplusplus
+          }
+          #endif
+          #define _RTL_IS_EC_CODE_DECLARED 1
+          #endif
+          #endif /* EC */
+          #endif /* guard */
+          H
+
+      - name: Bootstrap configure (autogen.sh)
+        working-directory: src-wine
+        run: |
+          set -Eeuo pipefail
+          if [[ -x ./autogen.sh ]]; then
+            ./autogen.sh
+          fi
+          test -x configure || { echo "configure script missing after bootstrap" >&2; exit 1; }
+
+      - name: Configure (ARM64EC + AArch64 + i386) using gcc wrappers
+        shell: bash
+        working-directory: src-wine
+        env:
+          CONFIG_SHELL: /usr/bin/bash
+          arm64ec_CC: ccache arm64ec-w64-mingw32-gcc
+          arm64ec_CXX: ccache arm64ec-w64-mingw32-g++
+          arm64ec_CPPFLAGS: -D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00 -include $GITHUB_WORKSPACE/src-wine/include/arm64ec-sdk-shim.h
+          arm64ec_CFLAGS: -U__x86_64__ -U_M_X64 -U_M_AMD64 -D__arm64ec__ -D__ARM64EC__ -D_M_ARM64EC=1 -D__aarch64__ -D_M_ARM64=1 -Wno-pragma-pack -fno-strict-aliasing -ffunction-sections -gdwarf-4
+          arm64ec_CXXFLAGS: -U__x86_64__ -U_M_X64 -U_M_AMD64 -D__arm64ec__ -D__ARM64EC__ -D_M_ARM64EC=1 -D__aarch64__ -D_M_ARM64=1 -Wno-pragma-pack -fno-strict-aliasing -ffunction-sections -gdwarf-4
+          aarch64_CC: ccache aarch64-w64-mingw32-gcc
+          aarch64_CXX: ccache aarch64-w64-mingw32-g++
+          i386_CC: ccache i686-w64-mingw32-gcc
+          i386_CXX: ccache i686-w64-mingw32-g++
+          DLLTOOL: llvm-dlltool
+          WINDRES: llvm-windres
+          AR: llvm-ar
+          RANLIB: llvm-ranlib
+        run: |
+          set -Eeuo pipefail
+          mkdir -p build && cd build
+
+          set +e
+          bash -x ../configure \
+            --enable-archs=arm64ec,aarch64,i386 \
+            --with-mingw=gcc \
+            --disable-tests \
+            --prefix="${PREFIX}" \
+            2> configure.trace.txt | tee configure.stdout.txt
+          st=$?
+          set -e
+
+          echo ::group::config.log highlights
+          if [ -f config.log ]; then
+            if ! grep -nE 'error:|cannot |failed ' config.log | sed -n '1,200p'; then
+              tail -n 200 config.log || true
+            fi
+          else
+            echo "config.log not generated"
+          fi
+          echo ::endgroup::
+
+          echo ::group::configure.trace head
+          sed -n '1,160p' configure.trace.txt || true
+          echo ::endgroup::
+
+          if [ $st -ne 0 ]; then
+            echo "::error title=configure failed::See 'config.log' and 'configure.trace.txt' above"
+            exit $st
+          fi
+
+      - name: Build & Install (ccache on)
+        working-directory: src-wine/build
+        run: |
+          ccache -z || true
+          make -j"$(nproc)"
+          ccache -s || true
+          make install
+          mkdir -p "${STAGE}"
+          rsync -a "${PREFIX}/" "${STAGE}/"
+          rm -rf "${STAGE}/share/man" "${STAGE}/share/applications" \
+                 "${STAGE}/share/icons" "${STAGE}/share/pixmaps" \
+                 "${STAGE}/share/mime" || true
+
+      - name: Verify required lib/wine triplets
+        run: |
+          set -Eeuo pipefail
+          missing=0
+          ST_PATH="${STAGE}"
+          for d in aarch64-unix aarch64-windows i386-windows; do
+            [[ -d "$ST_PATH/lib/wine/$d" ]] || { echo "::error title=Missing triplet::$d missing"; missing=1; }
+          done
+          [[ -f "$ST_PATH/share/wine/wine.inf" ]] || { echo "::error title=Missing wine.inf::share/wine/wine.inf missing"; missing=1; }
+
+          echo ::group::bin
+          [[ -d "$ST_PATH/bin" ]] && find "$ST_PATH/bin" -maxdepth 1 -type f -print0 | xargs -0 -r -n1 basename | sort || true
+          echo ::endgroup::
+
+          echo ::group::lib/wine
+          [[ -d "$ST_PATH/lib/wine" ]] && find "$ST_PATH/lib/wine" -maxdepth 1 -mindepth 1 -type d -print0 | xargs -0 -r -n1 basename | sort || true
+          echo ::endgroup::
+          exit ${missing}
+
+      - name: Pack runtime (tar.xz, multi-thread)
+        run: tar -C "${STAGE}" -I 'xz -T0 -9' -cf wine-${{ inputs.wine_tag }}-arm64ec-wow64.tar.xz .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wine-${{ inputs.wine_tag }}-arm64ec-wow64
+          path: wine-${{ inputs.wine_tag }}-arm64ec-wow64.tar.xz
+          if-no-files-found: error
