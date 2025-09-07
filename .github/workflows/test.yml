@@ -130,12 +130,14 @@ jobs:
             echo "::error title=ARM64EC toolchain incomplete::Provide toolchain_url for an ARM64EC-capable llvm-mingw (ucrt) release"; exit 1
           fi
 
-      - name: Cache ccache
-        uses: actions/cache@v4
+      - name: Restore ccache
+        id: ccache_restore
+        uses: actions/cache/restore@v4
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-${{ runner.os }}-${{ inputs.wine_tag }}-${{ steps.tcmeta.outputs.tag }}-gccv1
           restore-keys: |
+            ccache-${{ runner.os }}-${{ inputs.wine_tag }}-
             ccache-${{ runner.os }}-
 
       - name: Install build deps (incl. Debian Wine control.in hints)
@@ -231,8 +233,8 @@ jobs:
           arm64ec_CC: ccache arm64ec-w64-mingw32-gcc
           arm64ec_CXX: ccache arm64ec-w64-mingw32-g++
           arm64ec_CPPFLAGS: -D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00
-          arm64ec_CFLAGS: -U__x86_64__ -U_M_X64 -U_M_AMD64 -D__arm64ec__ -D__ARM64EC__ -D_M_ARM64EC=1 -D__aarch64__ -D_M_ARM64=1 -Wno-pragma-pack -fno-strict-aliasing -ffunction-sections -gdwarf-4 -D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00 -include $$GITHUB_WORKSPACE/src-wine/include/arm64ec-sdk-shim.h
-          arm64ec_CXXFLAGS: -U__x86_64__ -U_M_X64 -U_M_AMD64 -D__arm64ec__ -D__ARM64EC__ -D_M_ARM64EC=1 -D__aarch64__ -D_M_ARM64=1 -Wno-pragma-pack -fno-strict-aliasing -ffunction-sections -gdwarf-4 -D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00 -include $$GITHUB_WORKSPACE/src-wine/include/arm64ec-sdk-shim.h
+          arm64ec_CFLAGS: -U__x86_64__ -U_M_X64 -U_M_AMD64 -D__arm64ec__ -D__ARM64EC__ -D_M_ARM64EC=1 -D__aarch64__ -D_M_ARM64=1 -Wno-pragma-pack -fno-strict-aliasing -ffunction-sections -gdwarf-4 -D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00 -include ${{ github.workspace }}/src-wine/include/arm64ec-sdk-shim.h
+          arm64ec_CXXFLAGS: -U__x86_64__ -U_M_X64 -U_M_AMD64 -D__arm64ec__ -D__ARM64EC__ -D_M_ARM64EC=1 -D__aarch64__ -D_M_ARM64=1 -Wno-pragma-pack -fno-strict-aliasing -ffunction-sections -gdwarf-4 -D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00 -include ${{ github.workspace }}/src-wine/include/arm64ec-sdk-shim.h
           aarch64_CC: ccache aarch64-w64-mingw32-gcc
           aarch64_CXX: ccache aarch64-w64-mingw32-g++
           i386_CC: ccache i686-w64-mingw32-gcc
@@ -277,6 +279,7 @@ jobs:
       - name: Build & Install (ccache on)
         working-directory: src-wine/build
         run: |
+          ccache --show-config || true
           ccache -z || true
           make -j"$(nproc)"
           ccache -s || true
@@ -286,6 +289,13 @@ jobs:
           rm -rf "${STAGE}/share/man" "${STAGE}/share/applications" \
                  "${STAGE}/share/icons" "${STAGE}/share/pixmaps" \
                  "${STAGE}/share/mime" || true
+
+      - name: Save ccache (always promote to primary key)
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ runner.os }}-${{ inputs.wine_tag }}-${{ steps.tcmeta.outputs.tag }}-gccv1
 
       - name: Verify required lib/wine triplets
         run: |
