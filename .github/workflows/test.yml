@@ -2,7 +2,7 @@ on:
   workflow_dispatch:
     inputs:
       wine_tag:
-        description: 'Artifact/tag label only (kept for naming). Source comes from your release asset.'
+        description: 'Label for artifact naming only (source comes from your release asset)'
         required: true
         default: 'proton-wine-10.0-2d'
       toolchain_url:
@@ -56,8 +56,7 @@ jobs:
             tc_url="$LLVM_TC_URL_DEFAULT"
           fi
           file=$(basename "$tc_url")
-          tag="$file"
-          tag="${tag%.tar.xz}"; tag="${tag%.tar.zst}"; tag="${tag%.tar.gz}"
+          tag="$file"; tag="${tag%.tar.xz}"; tag="${tag%.tar.zst}"; tag="${tag%.tar.gz}"
           echo "url=$tc_url" >> "$GITHUB_OUTPUT"
           echo "tag=repo-$tag" >> "$GITHUB_OUTPUT"
           echo "Using toolchain: $tc_url (tag=repo-$tag)"
@@ -180,7 +179,7 @@ jobs:
             rsync -a "$tmp/" "$GITHUB_WORKSPACE/src-wine/"
           fi
           rm -rf "$tmp"
-          echo "Wine tree ready:"; ls -la src-wine | sed -n '1,80p'
+          echo "Wine tree ready:"; ls -la src-wine | sed -n '1,120p'
 
       - name: Drop ARM64EC SDK shim header (Proton tag compat)
         run: |
@@ -233,8 +232,8 @@ jobs:
           arm64ec_CC: ccache arm64ec-w64-mingw32-gcc
           arm64ec_CXX: ccache arm64ec-w64-mingw32-g++
           arm64ec_CPPFLAGS: -D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00
-          arm64ec_CFLAGS: -U__x86_64__ -U_M_X64 -U_M_AMD64 -D__arm64ec__ -D__ARM64EC__ -D_M_ARM64EC=1 -D__aarch64__ -D_M_ARM64=1 -Wno-pragma-pack -fno-strict-aliasing -ffunction-sections -gdwarf-4 -D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00 -include ${{ github.workspace }}/src-wine/include/arm64ec-sdk-shim.h -mbranch-protection=none -fno-stack-protector -fomit-frame-pointer
-          arm64ec_CXXFLAGS: -U__x86_64__ -U_M_X64 -U_M_AMD64 -D__arm64ec__ -D__ARM64EC__ -D_M_ARM64EC=1 -D__aarch64__ -D_M_ARM64=1 -Wno-pragma-pack -fno-strict-aliasing -ffunction-sections -gdwarf-4 -D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00 -include ${{ github.workspace }}/src-wine/include/arm64ec-sdk-shim.h -mbranch-protection=none -fno-stack-protector -fomit-frame-pointer
+          arm64ec_CFLAGS: -DDECLSPEC_HOTPATCH= -U__x86_64__ -U_M_X64 -U_M_AMD64 -D__arm64ec__ -D__ARM64EC__ -D_M_ARM64EC=1 -D__aarch64__ -D_M_ARM64=1 -Wno-pragma-pack -fno-strict-aliasing -ffunction-sections -gdwarf-4 -D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00 -include ${{ github.workspace }}/src-wine/include/arm64ec-sdk-shim.h -mbranch-protection=none -fno-stack-protector -fomit-frame-pointer
+          arm64ec_CXXFLAGS: -DDECLSPEC_HOTPATCH= -U__x86_64__ -U_M_X64 -U_M_AMD64 -D__arm64ec__ -D__ARM64EC__ -D_M_ARM64EC=1 -D__aarch64__ -D_M_ARM64=1 -Wno-pragma-pack -fno-strict-aliasing -ffunction-sections -gdwarf-4 -D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00 -include ${{ github.workspace }}/src-wine/include/arm64ec-sdk-shim.h -mbranch-protection=none -fno-stack-protector -fomit-frame-pointer
           aarch64_CC: ccache aarch64-w64-mingw32-gcc
           aarch64_CXX: ccache aarch64-w64-mingw32-g++
           i386_CC: ccache i686-w64-mingw32-gcc
