@@ -235,8 +235,8 @@ jobs:
 
           # 최소 깃발. 튜닝/보안 플래그로 프롤로그를 흔들지 않는다.
           arm64ec_CPPFLAGS: -D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00
-          arm64ec_CFLAGS:   -DDECLSPEC_HOTPATCH= -U__x86_64__ -U_M_X64 -U_M_AMD64 -D__arm64ec__ -D__ARM64EC__ -D_M_ARM64EC=1 -D__aarch64__ -D_M_ARM64=1 -Wno-pragma-pack -fno-strict-aliasing -ffunction-sections -gdwarf-4 -D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00 -include ${{ github.workspace }}/src-wine/include/arm64ec-sdk-shim.h
-          arm64ec_CXXFLAGS: -DDECLSPEC_HOTPATCH= -U__x86_64__ -U_M_X64 -U_M_AMD64 -D__arm64ec__ -D__ARM64EC__ -D_M_ARM64EC=1 -D__aarch64__ -D_M_ARM64=1 -Wno-pragma-pack -fno-strict-aliasing -ffunction-sections -gdwarf-4 -D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00 -include ${{ github.workspace }}/src-wine/include/arm64ec-sdk-shim.h
+          arm64ec_CFLAGS:   -DDECLSPEC_HOTPATCH= -U__x86_64__ -U_M_X64 -U_M_AMD64 -D__arm64ec__ -D__ARM64EC__ -D_M_ARM64EC=1 -D__aarch64__ -D_M_ARM64=1 -Wno-pragma-pack -fno-strict-aliasing -ffunction-sections -g0 -D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00 -include ${{ github.workspace }}/src-wine/include/arm64ec-sdk-shim.h
+          arm64ec_CXXFLAGS: -DDECLSPEC_HOTPATCH= -U__x86_64__ -U_M_X64 -U_M_AMD64 -D__arm64ec__ -D__ARM64EC__ -D_M_ARM64EC=1 -D__aarch64__ -D_M_ARM64=1 -Wno-pragma-pack -fno-strict-aliasing -ffunction-sections -g0 -D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00 -include ${{ github.workspace }}/src-wine/include/arm64ec-sdk-shim.h
 
           aarch64_CC: ccache aarch64-w64-mingw32-clang
           aarch64_CXX: ccache aarch64-w64-mingw32-clang++
@@ -253,7 +253,7 @@ jobs:
           mkdir -p build && cd build
 
           set +e
-          bash -x ../configure \
+          AC_cv_prog_cc_g=no AC_cv_prog_cxx_g=no bash -x ../configure \
             --enable-archs=arm64ec,aarch64,i386 \
             --with-mingw=clang \
             --disable-tests \
@@ -297,7 +297,7 @@ jobs:
             -D__WINESRC__ -D__WINE_PE_BUILD -D_MSVCR_VER=0 \
             -D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00 \
             -U__x86_64__ -U_M_X64 -U_M_AMD64 -D__arm64ec__ -D__ARM64EC__ -D_M_ARM64EC=1 -D__aarch64__ -D_M_ARM64=1 \
-            -Wno-pragma-pack -fno-strict-aliasing -ffunction-sections -gdwarf-4 \
+            -Wno-pragma-pack -fno-strict-aliasing -ffunction-sections -g0 \
             -DDECLSPEC_HOTPATCH= \
             -include "$GITHUB_WORKSPACE/src-wine/include/arm64ec-sdk-shim.h"
 
