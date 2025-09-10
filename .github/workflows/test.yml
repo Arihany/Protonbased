@@ -38,7 +38,7 @@ jobs:
 
       # Fixed release asset URLs (your repo)
       WINE_SRC_URL: https://github.com/Arihany/Protonbased/releases/download/Resources/wine-proton.tar.gz
-      LLVM_TC_URL_DEFAULT: https://github.com/Arihany/Protonbased/releases/download/Resources/llvm-mingw.tar.xz
+      LLVM_TC_URL_DEFAULT: https://github.com/Arihany/Protonbased/releases/download/Resources/llvm-mingw-20250910-ucrt-ubuntu-22.04-x86_64.tar.xz
 
     steps:
       - name: Checkout
@@ -88,20 +88,20 @@ jobs:
       - name: Add toolchain to PATH (prepend)
         run: echo "PATH=${{ env.LLVM_TC_DIR }}/bin:$PATH" >> $GITHUB_ENV
 
-      - name: Sanity probe (gcc wrappers) and arm64ec link
+      - name: Sanity probe (clang drivers) and arm64ec link
         run: |
           set -Eeuo pipefail
           echo ::group::which
-          which arm64ec-w64-mingw32-gcc || true
-          which arm64ec-w64-mingw32-g++ || true
-          which aarch64-w64-mingw32-gcc || true
-          which i686-w64-mingw32-gcc || true
+          which arm64ec-w64-mingw32-clang || true
+          which arm64ec-w64-mingw32-clang++ || true
+          which aarch64-w64-mingw32-clang || true
+          which i686-w64-mingw32-clang || true
           echo ::endgroup::
 
           echo ::group::arm64ec-probe
           set +e
           printf 'int main(void){return 0;}' > t.c
-          arm64ec-w64-mingw32-gcc -v t.c -o t.exe
+          arm64ec-w64-mingw32-clang -v t.c -o t.exe
           stat t.exe || true
           rm -f t.c t.exe || true
           echo ::endgroup::
@@ -109,7 +109,7 @@ jobs:
       - name: Verify ARM64EC toolchain presence (fail-fast)
         run: |
           set -Eeuo pipefail
-          need="arm64ec-w64-mingw32-gcc arm64ec-w64-mingw32-g++ aarch64-w64-mingw32-gcc aarch64-w64-mingw32-g++ i686-w64-mingw32-gcc i686-w64-mingw32-g++ llvm-dlltool llvm-windres lld-link"
+          need="arm64ec-w64-mingw32-clang arm64ec-w64-mingw32-clang++ aarch64-w64-mingw32-clang aarch64-w64-mingw32-clang++ i686-w64-mingw32-clang i686-w64-mingw32-clang++ llvm-dlltool llvm-windres lld-link"
           ok=1
           for b in $need; do
             if ! command -v "$b" >/dev/null 2>&1; then echo "::error title=Missing::$b not found"; ok=0; else which "$b"; "$b" --version | head -n1 || true; fi
@@ -132,7 +132,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache-${{ runner.os }}-${{ inputs.wine_tag }}-${{ steps.tcmeta.outputs.tag }}-gccv1
+          key: ccache-${{ runner.os }}-${{ inputs.wine_tag }}-${{ steps.tcmeta.outputs.tag }}-clangv1
           restore-keys: |
             ccache-${{ runner.os }}-${{ inputs.wine_tag }}-
             ccache-${{ runner.os }}-
@@ -219,26 +219,30 @@ jobs:
           fi
           test -x configure || { echo "configure script missing after bootstrap" >&2; exit 1; }
 
-      - name: Configure (ARM64EC + AArch64 + i386) using gcc wrappers
+      - name: Sanitize env CFLAGS (ban stray -mcpu/-mtune etc.)
+        working-directory: src-wine
+        run: |
+          unset CFLAGS CXXFLAGS CPPFLAGS LDFLAGS || true
+
+      - name: Configure (ARM64EC + AArch64 + i386) using clang drivers
         shell: bash
         working-directory: src-wine
         env:
           CONFIG_SHELL: /usr/bin/bash
 
-          arm64ec_CC: ccache arm64ec-w64-mingw32-gcc
-          arm64ec_CXX: ccache arm64ec-w64-mingw32-g++
+          arm64ec_CC: ccache arm64ec-w64-mingw32-clang
+          arm64ec_CXX: ccache arm64ec-w64-mingw32-clang++
 
-          # PAC/BTI/핫패치 NOP 완전 차단 + EC SDK 셔틀 포함
+          # 최소 깃발. 튜닝/보안 플래그로 프롤로그를 흔들지 않는다.
           arm64ec_CPPFLAGS: -D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00
-          arm64ec_CFLAGS: -DDECLSPEC_HOTPATCH= -U__x86_64__ -U_M_X64 -U_M_AMD64 -D__arm64ec__ -D__ARM64EC__ -D_M_ARM64EC=1 -D__aarch64__ -D_M_ARM64=1 -Wno-pragma-pack -fno-strict-aliasing -ffunction-sections -gdwarf-4 -D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00 -include ${{ github.workspace }}/src-wine/include/arm64ec-sdk-shim.h -mbranch-protection=none -msign-return-address=none -fno-ms-hotpatch -Xclang -mno-implicit-fnattr=ms_hook_prologue -fno-stack-protector -fomit-frame-pointer
-          arm64ec_CXXFLAGS: -DDECLSPEC_HOTPATCH= -U__x86_64__ -U_M_X64 -U_M_AMD64 -D__arm64ec__ -D__ARM64EC__ -D_M_ARM64EC=1 -D__aarch64__ -D_M_ARM64=1 -Wno-pragma-pack -fno-strict-aliasing -ffunction-sections -gdwarf-4 -D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00 -include ${{ github.workspace }}/src-wine/include/arm64ec-sdk-shim.h -mbranch-protection=none -msign-return-address=none -fno-ms-hotpatch -Xclang -mno-implicit-fnattr=ms_hook_prologue -fno-stack-protector -fomit-frame-pointer
-          arm64ec_LDFLAGS: -Wl,/hotpatch:no
+          arm64ec_CFLAGS:   -DDECLSPEC_HOTPATCH= -U__x86_64__ -U_M_X64 -U_M_AMD64 -D__arm64ec__ -D__ARM64EC__ -D_M_ARM64EC=1 -D__aarch64__ -D_M_ARM64=1 -Wno-pragma-pack -fno-strict-aliasing -ffunction-sections -gdwarf-4 -D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00 -include ${{ github.workspace }}/src-wine/include/arm64ec-sdk-shim.h
+          arm64ec_CXXFLAGS: -DDECLSPEC_HOTPATCH= -U__x86_64__ -U_M_X64 -U_M_AMD64 -D__arm64ec__ -D__ARM64EC__ -D_M_ARM64EC=1 -D__aarch64__ -D_M_ARM64=1 -Wno-pragma-pack -fno-strict-aliasing -ffunction-sections -gdwarf-4 -D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00 -include ${{ github.workspace }}/src-wine/include/arm64ec-sdk-shim.h
 
-          aarch64_CC: ccache aarch64-w64-mingw32-gcc
-          aarch64_CXX: ccache aarch64-w64-mingw32-g++
+          aarch64_CC: ccache aarch64-w64-mingw32-clang
+          aarch64_CXX: ccache aarch64-w64-mingw32-clang++
 
-          i386_CC: ccache i686-w64-mingw32-gcc
-          i386_CXX: ccache i686-w64-mingw32-g++
+          i386_CC: ccache i686-w64-mingw32-clang
+          i386_CXX: ccache i686-w64-mingw32-clang++
 
           DLLTOOL: llvm-dlltool
           WINDRES: llvm-windres
@@ -251,7 +255,7 @@ jobs:
           set +e
           bash -x ../configure \
             --enable-archs=arm64ec,aarch64,i386 \
-            --with-mingw=gcc \
+            --with-mingw=clang \
             --disable-tests \
             --prefix="${PREFIX}" \
             2> configure.trace.txt | tee configure.stdout.txt
@@ -288,25 +292,21 @@ jobs:
 
           echo "[guard] probing ARM64EC prologue in $SRC"
 
-          arm64ec-w64-mingw32-gcc -S -o "$OUT" "$SRC" \
+          arm64ec-w64-mingw32-clang -S -o "$OUT" "$SRC" \
             -Idlls/kernelbase -Iinclude -I../include -I../include/msvcrt \
             -D__WINESRC__ -D__WINE_PE_BUILD -D_MSVCR_VER=0 \
             -D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00 \
             -U__x86_64__ -U_M_X64 -U_M_AMD64 -D__arm64ec__ -D__ARM64EC__ -D_M_ARM64EC=1 -D__aarch64__ -D_M_ARM64=1 \
             -Wno-pragma-pack -fno-strict-aliasing -ffunction-sections -gdwarf-4 \
-            -mbranch-protection=none -msign-return-address=none -fno-ms-hotpatch -Xclang -mno-implicit-fnattr=ms_hook_prologue \
-            -fno-stack-protector -fomit-frame-pointer \
             -DDECLSPEC_HOTPATCH= \
             -include "$GITHUB_WORKSPACE/src-wine/include/arm64ec-sdk-shim.h"
 
           echo '----- [guard] head(memory.s) -----'
           sed -n '1,80p' "$OUT" || true
 
-          # 로깅 강화: 의심 명령어 미리 뽑기
           echo '----- [guard] grep of suspicious ops -----'
           egrep -n '^[[:space:]]*(bti|pac[a-z]*|nop)\b' "$OUT" || true
 
-          # 순수 ASCII awk
           cat > /tmp/guard.awk <<'AWK'
           BEGIN { inproc=0; end=0; bad=0; n=0 }
           /^[[:space:]]*[.]seh_proc[[:space:]]+.*FlushInstructionCache/ { inproc=1 }
@@ -324,9 +324,6 @@ jobs:
           AWK
 
           awk -f /tmp/guard.awk "$OUT"
-
-          # 필요시 커맨트 해제해 부분 플래그 주입 (Plan B)
-          # echo 'CFLAGS_kernelbase=-mbranch-protection=none -msign-return-address=none -fno-ms-hotpatch -Xclang -mno-implicit-fnattr=ms_hook_prologue' >> dlls/kernelbase/Makefile || true
 
       - name: Build & Install (ccache on)
         working-directory: src-wine/build
@@ -347,7 +344,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache-${{ runner.os }}-${{ inputs.wine_tag }}-${{ steps.tcmeta.outputs.tag }}-gccv1
+          key: ccache-${{ runner.os }}-${{ inputs.wine_tag }}-${{ steps.tcmeta.outputs.tag }}-clangv1
 
       - name: Verify required lib/wine triplets
         run: |
