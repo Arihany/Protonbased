@@ -6,8 +6,6 @@ name: DXVK
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 18 * * *"
 
 permissions:
   contents: read
@@ -23,7 +21,7 @@ concurrency:
 jobs:
   guard:
     name: Check Update
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 5
     outputs:
       build:    ${{ steps.detect.outputs.missing }}
@@ -99,7 +97,7 @@ jobs:
 
   build-and-release:
     name: Build & release missing versions
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     needs: guard
     if: needs.guard.outputs.build == 'true'
     timeout-minutes: 60
